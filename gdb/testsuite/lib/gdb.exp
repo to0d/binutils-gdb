@@ -216,6 +216,7 @@ if ![info exists INTERNAL_GDBFLAGS] {
 	[join [list \
 		   "-nw" \
 		   "-nx" \
+		   "-q" \
 		   {-iex "set height 0"} \
 		   {-iex "set width 0"}]]
 
@@ -679,7 +680,7 @@ proc gdb_breakpoint { linespec args } {
 	-re "$break_message \[0-9\]* \\(.*\\) pending.*$gdb_prompt $" {
 		if {$pending_response == "n"} {
 			if { $print_fail } {
-				fail $gdb_name_name
+				fail $gdb_test_name
 			}
 			return 0
 		}
@@ -1489,25 +1490,13 @@ proc gdb_test { args } {
     return [gdb_test_multiple $command $message {*}$opts $user_code]
 }
 
-# Return 1 if version MAJOR.MINOR is at least AT_LEAST_MAJOR.AT_LEAST_MINOR.
-proc version_at_least { major minor at_least_major at_least_minor} {
-    if { $major > $at_least_major } {
-        return 1
-    } elseif { $major == $at_least_major \
-		   && $minor >= $at_least_minor } {
-        return 1
-    } else {
-        return 0
-    }
-}
-
 # Return 1 if tcl version used is at least MAJOR.MINOR
 proc tcl_version_at_least { major minor } {
     global tcl_version
     regexp {^([0-9]+)\.([0-9]+)$} $tcl_version \
 	dummy tcl_version_major tcl_version_minor
-    return [version_at_least $tcl_version_major $tcl_version_minor \
-		$major $minor]
+    return [version_compare [list $major $minor] \
+		<= [list $tcl_version_major $tcl_version_minor]]
 }
 
 if { [tcl_version_at_least 8 5] == 0 } {
@@ -2314,6 +2303,14 @@ proc default_gdb_start { } {
 	    # that case, this case is hit.
 	    verbose "GDB initialized."
 	}
+	-re "^$gdb_prompt $" {
+	    # Output with -q.
+	    verbose "GDB initialized."
+	}
+	-re "^\033\\\[.2004h$gdb_prompt $" {
+	    # Output with -q, and bracketed paste mode enabled, see above.
+	    verbose "GDB initialized."
+	}
 	-re "$gdb_prompt $"	{
 	    perror "GDB never initialized."
 	    unset gdb_spawn_id
@@ -2461,23 +2458,48 @@ proc allow_d_tests {} {
     return 1
 }
 
-# Return 1 to try Rust tests, 0 to skip them.
-proc allow_rust_tests {} {
-    if { ![isnative] } {
-	return 0
+# Return a 1 if we can compile source files in LANG.
+
+gdb_caching_proc can_compile { lang } {
+
+    if { $lang == "d" } {
+	set src { void main() {} }
+	return [gdb_can_simple_compile can_compile_$lang $src executable {d}]
     }
 
-    # The rust compiler does not support "-m32", skip.
-    global board board_info
-    set board [target_info name]
-    if {[board_info $board exists multilib_flags]} {
-	foreach flag [board_info $board multilib_flags] {
-	    if { $flag == "-m32" } {
-		return 0
+    if { $lang == "rust" } {
+	if { ![isnative] } {
+	    return 0
+	}
+
+	if { [is_remote host] } {
+	    # Proc find_rustc returns "" for remote host.
+	    return 0
+	}
+
+	# The rust compiler does not support "-m32", skip.
+	global board board_info
+	set board [target_info name]
+	if {[board_info $board exists multilib_flags]} {
+	    foreach flag [board_info $board multilib_flags] {
+		if { $flag == "-m32" } {
+		    return 0
+		}
 	    }
 	}
+
+	set src { fn main() {} }
+	# Drop nowarnings in default_compile_flags, it translates to -w which
+	# rustc doesn't support.
+	return [gdb_can_simple_compile can_compile_$lang $src executable \
+		    {rust} {debug quiet}]
     }
 
+    error "can_compile doesn't support lang: $lang"
+}
+
+# Return 1 to try Rust tests, 0 to skip them.
+proc allow_rust_tests {} {
     return 1
 }
 
@@ -4579,8 +4601,8 @@ gdb_caching_proc universal_compile_options {} {
     set me "universal_compile_options"
     set options {}
 
-    set src [standard_temp_file ccopts[pid].c]
-    set obj [standard_temp_file ccopts[pid].o]
+    set src [standard_temp_file ccopts.c]
+    set obj [standard_temp_file ccopts.o]
 
     gdb_produce_source $src {
 	int foo(void) { return 0; }
@@ -4603,11 +4625,12 @@ gdb_caching_proc universal_compile_options {} {
 }
 
 # Compile the code in $code to a file based on $name, using the flags
-# $compile_flag as well as debug, nowarning and quiet.
+# $compile_flag as well as debug, nowarning and quiet  (unless otherwise
+# specified in default_compile_flags).
 # Return 1 if code can be compiled
 # Leave the file name of the resulting object in the upvar object.
 
-proc gdb_simple_compile {name code {type object} {compile_flags {}} {object obj}} {
+proc gdb_simple_compile {name code {type object} {compile_flags {}} {object obj} {default_compile_flags {}}} {
     upvar $object obj
 
     switch -regexp -- $type {
@@ -4634,10 +4657,18 @@ proc gdb_simple_compile {name code {type object} {compile_flags {}} {object obj}
 	    set ext "cpp"
 	    break
 	}
+	if { "$flag" eq "d" } {
+	    set ext "d"
+	    break
+	}
     }
-    set src [standard_temp_file $name-[pid].$ext]
-    set obj [standard_temp_file $name-[pid].$postfix]
-    set compile_flags [concat $compile_flags {debug nowarnings quiet}]
+    set src [standard_temp_file $name.$ext]
+    set obj [standard_temp_file $name.$postfix]
+    if { $default_compile_flags == "" } {
+	set compile_flags [concat $compile_flags {debug nowarnings quiet}]
+    } else {
+	set compile_flags [concat $compile_flags $default_compile_flags]
+    }
 
     gdb_produce_source $src $code
 
@@ -4654,12 +4685,14 @@ proc gdb_simple_compile {name code {type object} {compile_flags {}} {object obj}
 }
 
 # Compile the code in $code to a file based on $name, using the flags
-# $compile_flag as well as debug, nowarning and quiet.
+# $compile_flag as well as debug, nowarning and quiet (unless otherwise
+# specified in default_compile_flags).
 # Return 1 if code can be compiled
 # Delete all created files and objects.
 
-proc gdb_can_simple_compile {name code {type object} {compile_flags ""}} {
-    set ret [gdb_simple_compile $name $code $type $compile_flags temp_obj]
+proc gdb_can_simple_compile {name code {type object} {compile_flags ""} {default_compile_flags ""}} {
+    set ret [gdb_simple_compile $name $code $type $compile_flags temp_obj \
+		 $default_compile_flags]
     file delete $temp_obj
     return $ret
 }
@@ -4682,6 +4715,19 @@ proc escape_for_host { str } {
     }
 
     return [string map $map $str]
+}
+
+# Add double quotes around ARGS, sufficiently escaped for use on host
+# commandline.
+
+proc quote_for_host { args } {
+    set str [join $args]
+    if { [is_remote host] } {
+	set str [join [list {\"} $str {\"}] ""]
+    } else {
+	set str [join [list {"} $str {"}] ""]
+    }
+    return $str
 }
 
 # Compile source files specified by SOURCE into a binary of type TYPE at path
@@ -6383,7 +6429,15 @@ proc standard_output_file {basename} {
 
 proc host_standard_output_file { basename } {
     if { [is_remote host] } {
-	return $basename
+	set remotedir [board_info host remotedir]
+	if { $remotedir == "" } {
+	    if { $basename == "" } {
+		return "."
+	    }
+	    return $basename
+	} else {
+	    return [join [list $remotedir $basename] "/"]
+	}
     } else {
 	return [standard_output_file $basename]
     }
@@ -6961,7 +7015,7 @@ proc readelf_prints_pie { } {
     # flag is printed by readelf, but we cannot reliably construct a PIE
     # executable if the multilib_flags dictate otherwise
     # (--target_board=unix/-no-pie/-fno-PIE).
-    return [version_at_least $major $minor 2 26]
+    return [version_compare {2 26} <= [list $major $minor]]
 }
 
 # Return 1 if EXECUTABLE is a Position Independent Executable, 0 if it is not,
@@ -7011,8 +7065,8 @@ gdb_caching_proc allow_float_test {} {
 
 	# Set up, compile, and execute a test program having VFP
 	# operations.
-	set src [standard_temp_file arm_vfp[pid].c]
-	set exe [standard_temp_file arm_vfp[pid].x]
+	set src [standard_temp_file arm_vfp.c]
+	set exe [standard_temp_file arm_vfp.x]
 
 	gdb_produce_source $src {
 	    int main() {
@@ -8445,7 +8499,7 @@ proc gdb_define_cmd {command command_list} {
     set test "define $command"
 
     gdb_test_multiple "define $command" $test {
-	-re "End with"  {
+	-re "End with \[^\r\n\]*\r\n *>$"  {
 	    gdb_test_multiple $input $test {
 		-re "\r\n$gdb_prompt " {
 		}
@@ -8724,6 +8778,10 @@ proc readnow { } {
 # Otherwise, return "".
 
 proc have_index { objfile } {
+    # This proc is mostly used with $binfile, but that gives problems with
+    # remote host, while using $testfile would work.
+    # Fix this by reducing $binfile to $testfile.
+    set objfile [file tail $objfile]
 
     set res ""
     set cmd "maint print objfiles $objfile"
@@ -9190,22 +9248,43 @@ gdb_caching_proc have_avx {} {
 #
 # ARG can either be a name, or of the form !NAME.
 #
-# Each name is a proc to evaluate in the caller's context.  It returns
-# a boolean, and a "!" means to invert the result.  If this is
-# nonzero, all is well.  If it is zero, an "untested" is emitted and
-# this proc causes the caller to return.
+# Each name is a proc to evaluate in the caller's context.  It can return a
+# boolean or a two element list with a boolean and a reason string.
+# A "!" means to invert the result.  If this is true, all is well.  If it is
+# false, an "unsupported" is emitted and this proc causes the caller to return.
+#
+# The reason string is used to provide some context about a require failure,
+# and is included in the "unsupported" message.
 
 proc require { args } {
     foreach arg $args {
 	if {[string index $arg 0] == "!"} {
-	    set ok 0
+	    set required_val 0
 	    set fn [string range $arg 1 end]
 	} else {
-	    set ok 1
+	    set required_val 1
 	    set fn $arg
 	}
-	if {$ok != !![uplevel 1 $fn]} {
-	    unsupported "require failed: $arg"
+
+	set result [uplevel 1 $fn]
+	set len [llength $result]
+	if { $len == 2 } {
+	    set actual_val [lindex $result 0]
+	    set msg [lindex $result 1]
+	} elseif { $len == 1 } {
+	    set actual_val $result
+	    set msg ""
+	} else {
+	    error "proc $fn returned a list of unexpected length $len"
+	}
+
+	if {$required_val != !!$actual_val} {
+	    if { [string length $msg] > 0 } {
+		unsupported "require failed: $arg ($msg)"
+	    } else {
+		unsupported "require failed: $arg"
+	    }
+
 	    return -code return 0
 	}
     }

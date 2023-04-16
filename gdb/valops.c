@@ -570,7 +570,7 @@ value_cast (struct type *type, struct value *arg2)
 	   && (scalar || code2 == TYPE_CODE_PTR
 	       || code2 == TYPE_CODE_MEMBERPTR))
     {
-      LONGEST longest;
+      gdb_mpz longest;
 
       /* When we cast pointers to integers, we mustn't use
 	 gdbarch_pointer_to_address to find the address the pointer
@@ -579,12 +579,14 @@ value_cast (struct type *type, struct value *arg2)
 	 sees a cast as a simple reinterpretation of the pointer's
 	 bits.  */
       if (code2 == TYPE_CODE_PTR)
-	longest = extract_unsigned_integer
-	  (arg2->contents (), type_byte_order (type2));
+	longest = extract_unsigned_integer (arg2->contents (),
+					    type_byte_order (type2));
       else
-	longest = value_as_long (arg2);
-      return value_from_longest (to_type, convert_to_boolean ?
-				 (LONGEST) (longest ? 1 : 0) : longest);
+	longest = value_as_mpz (arg2);
+      if (convert_to_boolean)
+	longest = bool (longest);
+
+      return value_from_mpz (to_type, longest);
     }
   else if (code1 == TYPE_CODE_PTR && (code2 == TYPE_CODE_INT  
 				      || code2 == TYPE_CODE_ENUM 
@@ -978,14 +980,15 @@ value_one (struct type *type)
    e.g. in case the type is a variable length array.  */
 
 static struct value *
-get_value_at (struct type *type, CORE_ADDR addr, int lazy)
+get_value_at (struct type *type, CORE_ADDR addr, frame_info_ptr frame,
+	      int lazy)
 {
   struct value *val;
 
   if (check_typedef (type)->code () == TYPE_CODE_VOID)
     error (_("Attempt to dereference a generic pointer."));
 
-  val = value_from_contents_and_address (type, NULL, addr);
+  val = value_from_contents_and_address (type, NULL, addr, frame);
 
   if (!lazy)
     val->fetch_lazy ();
@@ -1011,7 +1014,7 @@ get_value_at (struct type *type, CORE_ADDR addr, int lazy)
 struct value *
 value_at (struct type *type, CORE_ADDR addr)
 {
-  return get_value_at (type, addr, 0);
+  return get_value_at (type, addr, nullptr, 0);
 }
 
 /* See value.h.  */
@@ -1030,9 +1033,9 @@ value_at_non_lval (struct type *type, CORE_ADDR addr)
    e.g. in case the type is a variable length array.  */
 
 struct value *
-value_at_lazy (struct type *type, CORE_ADDR addr)
+value_at_lazy (struct type *type, CORE_ADDR addr, frame_info_ptr frame)
 {
-  return get_value_at (type, addr, 1);
+  return get_value_at (type, addr, frame, 1);
 }
 
 void

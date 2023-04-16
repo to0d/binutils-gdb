@@ -240,6 +240,8 @@ static const dependency isa_dependencies[] =
     "AMX_TILE" },
   { "AMX_FP16",
     "AMX_TILE" },
+  { "AMX_COMPLEX",
+    "AMX_TILE" },
   { "KL",
     "SSE2" },
   { "WIDEKL",
@@ -378,6 +380,7 @@ static bitfield cpu_flags[] =
   BITFIELD (AMX_INT8),
   BITFIELD (AMX_BF16),
   BITFIELD (AMX_FP16),
+  BITFIELD (AMX_COMPLEX),
   BITFIELD (AMX_TILE),
   BITFIELD (MOVDIRI),
   BITFIELD (MOVDIR64B),
@@ -1813,6 +1816,9 @@ process_i386_opcodes (FILE *table)
 	}
       l = l1;
     }
+
+  fprintf (table, "  \"\\0\"\".insn\"\n");
+  fprintf (fp, "#define MN__insn %#x\n", offs + 1);
 
   fprintf (table, ";\n");
 

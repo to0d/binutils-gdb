@@ -469,7 +469,7 @@ s390_displaced_step_copy_insn (struct gdbarch *gdbarch,
 
   displaced_debug_printf ("copy %s->%s: %s",
 			  paddress (gdbarch, from), paddress (gdbarch, to),
-			  displaced_step_dump_bytes (buf, len).c_str ());
+			  bytes_to_string (buf, len).c_str ());
 
   /* This is a work around for a problem with g++ 4.8.  */
   return displaced_step_copy_insn_closure_up (closure.release ());
@@ -482,8 +482,19 @@ static void
 s390_displaced_step_fixup (struct gdbarch *gdbarch,
 			   displaced_step_copy_insn_closure *closure_,
 			   CORE_ADDR from, CORE_ADDR to,
-			   struct regcache *regs)
+			   struct regcache *regs, bool completed_p)
 {
+  CORE_ADDR pc = regcache_read_pc (regs);
+
+  /* If the displaced instruction didn't complete successfully then all we
+     need to do is restore the program counter.  */
+  if (!completed_p)
+    {
+      pc = from + (pc - to);
+      regcache_write_pc (regs, pc);
+      return;
+    }
+
   /* Our closure is a copy of the instruction.  */
   s390_displaced_step_copy_insn_closure *closure
     = (s390_displaced_step_copy_insn_closure *) closure_;
@@ -495,10 +506,8 @@ s390_displaced_step_fixup (struct gdbarch *gdbarch,
   unsigned int b2, r1, r2, x2, r3;
   int i2, d2;
 
-  /* Get current PC and addressing mode bit.  */
-  CORE_ADDR pc = regcache_read_pc (regs);
+  /* Get addressing mode bit.  */
   ULONGEST amode = 0;
-
   if (register_size (gdbarch, S390_PSWA_REGNUM) == 4)
     {
       regcache_cooked_read_unsigned (regs, S390_PSWA_REGNUM, &amode);

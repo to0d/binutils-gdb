@@ -1486,7 +1486,7 @@ _bfd_mips_elf_read_ecoff_info (bfd *abfd, asection *section,
 
   /* The symbolic header contains absolute file offsets and sizes to
      read.  */
-#define READ(ptr, offset, count, size, type)				\
+#define READ(ptr, offset, count, size)					\
   do									\
     {									\
       size_t amt;							\
@@ -1500,23 +1500,23 @@ _bfd_mips_elf_read_ecoff_info (bfd *abfd, asection *section,
 	}								\
       if (bfd_seek (abfd, symhdr->offset, SEEK_SET) != 0)		\
 	goto error_return;						\
-      debug->ptr = (type) _bfd_malloc_and_read (abfd, amt, amt);	\
+      debug->ptr = _bfd_malloc_and_read (abfd, amt + 1, amt);		\
       if (debug->ptr == NULL)						\
 	goto error_return;						\
+      ((char *) debug->ptr)[amt] = 0;					\
     } while (0)
 
-  READ (line, cbLineOffset, cbLine, sizeof (unsigned char), unsigned char *);
-  READ (external_dnr, cbDnOffset, idnMax, swap->external_dnr_size, void *);
-  READ (external_pdr, cbPdOffset, ipdMax, swap->external_pdr_size, void *);
-  READ (external_sym, cbSymOffset, isymMax, swap->external_sym_size, void *);
-  READ (external_opt, cbOptOffset, ioptMax, swap->external_opt_size, void *);
-  READ (external_aux, cbAuxOffset, iauxMax, sizeof (union aux_ext),
-	union aux_ext *);
-  READ (ss, cbSsOffset, issMax, sizeof (char), char *);
-  READ (ssext, cbSsExtOffset, issExtMax, sizeof (char), char *);
-  READ (external_fdr, cbFdOffset, ifdMax, swap->external_fdr_size, void *);
-  READ (external_rfd, cbRfdOffset, crfd, swap->external_rfd_size, void *);
-  READ (external_ext, cbExtOffset, iextMax, swap->external_ext_size, void *);
+  READ (line, cbLineOffset, cbLine, sizeof (unsigned char));
+  READ (external_dnr, cbDnOffset, idnMax, swap->external_dnr_size);
+  READ (external_pdr, cbPdOffset, ipdMax, swap->external_pdr_size);
+  READ (external_sym, cbSymOffset, isymMax, swap->external_sym_size);
+  READ (external_opt, cbOptOffset, ioptMax, swap->external_opt_size);
+  READ (external_aux, cbAuxOffset, iauxMax, sizeof (union aux_ext));
+  READ (ss, cbSsOffset, issMax, sizeof (char));
+  READ (ssext, cbSsExtOffset, issExtMax, sizeof (char));
+  READ (external_fdr, cbFdOffset, ifdMax, swap->external_fdr_size);
+  READ (external_rfd, cbRfdOffset, crfd, swap->external_rfd_size);
+  READ (external_ext, cbExtOffset, iextMax, swap->external_ext_size);
 #undef READ
 
   return true;
@@ -14524,6 +14524,16 @@ struct mips_mach_extension
   unsigned long extension, base;
 };
 
+/* An array that maps 64-bit architectures to the corresponding 32-bit
+   architectures.  */
+static const struct mips_mach_extension mips_mach_32_64[] =
+{
+  { bfd_mach_mipsisa64r6, bfd_mach_mipsisa32r6 },
+  { bfd_mach_mipsisa64r5, bfd_mach_mipsisa32r5 },
+  { bfd_mach_mipsisa64r3, bfd_mach_mipsisa32r3 },
+  { bfd_mach_mipsisa64r2, bfd_mach_mipsisa32r2 },
+  { bfd_mach_mipsisa64,   bfd_mach_mipsisa32 }
+};
 
 /* An array describing how BFD machines relate to one another.  The entries
    are ordered topologically with MIPS I extensions listed last.  */
@@ -14601,29 +14611,37 @@ static const struct mips_mach_extension mips_mach_extensions[] =
   { bfd_mach_mips3900, bfd_mach_mips3000 }
 };
 
-/* Return true if bfd machine EXTENSION is an extension of machine BASE.  */
+/* Return true if bfd machine EXTENSION is the same as BASE, or if
+   EXTENSION is the 64-bit equivalent of a 32-bit BASE.  */
 
 static bool
-mips_mach_extends_p (unsigned long base, unsigned long extension)
+mips_mach_extends_32_64 (unsigned long base, unsigned long extension)
 {
   size_t i;
 
   if (extension == base)
     return true;
 
-  if (base == bfd_mach_mipsisa32
-      && mips_mach_extends_p (bfd_mach_mipsisa64, extension))
-    return true;
+  for (i = 0; i < ARRAY_SIZE (mips_mach_32_64); i++)
+    if (extension == mips_mach_32_64[i].extension)
+      return base == mips_mach_32_64[i].base;
 
-  if (base == bfd_mach_mipsisa32r2
-      && mips_mach_extends_p (bfd_mach_mipsisa64r2, extension))
+  return false;
+}
+
+static bool
+mips_mach_extends_p (unsigned long base, unsigned long extension)
+{
+  size_t i;
+
+  if (mips_mach_extends_32_64 (base, extension))
     return true;
 
   for (i = 0; i < ARRAY_SIZE (mips_mach_extensions); i++)
     if (extension == mips_mach_extensions[i].extension)
       {
 	extension = mips_mach_extensions[i].base;
-	if (extension == base)
+	if (mips_mach_extends_32_64 (base, extension))
 	  return true;
       }
 
@@ -16595,7 +16613,7 @@ _bfd_mips_elf_get_synthetic_symtab (bfd *abfd,
   /* Calculating the exact amount of space required for symbols would
      require two passes over the PLT, so just pessimise assuming two
      PLT slots per relocation.  */
-  count = relplt->size / hdr->sh_entsize;
+  count = NUM_SHDR_ENTRIES (hdr);
   counti = count * bed->s->int_rels_per_ext_rel;
   size = 2 * count * sizeof (asymbol);
   size += count * (sizeof (mipssuffix) +

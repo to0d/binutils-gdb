@@ -1065,6 +1065,10 @@ delete_symbol_htabs (void)
   htab_delete (weaken_specific_htab);
   htab_delete (redefine_specific_htab);
   htab_delete (redefine_specific_reverse_htab);
+
+  free (isympp);
+  if (osympp != isympp)
+    free (osympp);
 }
 
 /* Add a symbol to strip_specific_list.  */
@@ -3333,14 +3337,11 @@ copy_object (bfd *ibfd, bfd *obfd, const bfd_arch_info_type *input_arch)
       symcount = filter_symbols (ibfd, obfd, osympp, isympp, symcount);
     }
 
-  if (convert_debugging && dhandle != NULL)
+  if (dhandle != NULL)
     {
       bool res;
 
       res = write_debugging_info (obfd, dhandle, &symcount, &osympp);
-
-      free (dhandle);
-      dhandle = NULL; /* Paranoia...  */
 
       if (! res)
 	{
@@ -4656,6 +4657,7 @@ write_debugging_info (bfd *obfd, void *dhandle,
       bfd_size_type symsize, stringsize;
       asection *stabsec, *stabstrsec;
       flagword flags;
+      bool ret;
 
       if (! write_stabs_in_sections_debugging_info (obfd, dhandle, &syms,
 						    &symsize, &strings,
@@ -4665,6 +4667,7 @@ write_debugging_info (bfd *obfd, void *dhandle,
       flags = SEC_HAS_CONTENTS | SEC_READONLY | SEC_DEBUGGING;
       stabsec = bfd_make_section_with_flags (obfd, ".stab", flags);
       stabstrsec = bfd_make_section_with_flags (obfd, ".stabstr", flags);
+      ret = true;
       if (stabsec == NULL
 	  || stabstrsec == NULL
 	  || !bfd_set_section_size (stabsec, symsize)
@@ -4674,25 +4677,26 @@ write_debugging_info (bfd *obfd, void *dhandle,
 	{
 	  bfd_nonfatal_message (NULL, obfd, NULL,
 				_("can't create debugging section"));
-	  free (strings);
-	  return false;
+	  ret = false;
 	}
 
       /* We can get away with setting the section contents now because
 	 the next thing the caller is going to do is copy over the
 	 real sections.  We may someday have to split the contents
 	 setting out of this function.  */
-      if (! bfd_set_section_contents (obfd, stabsec, syms, 0, symsize)
-	  || ! bfd_set_section_contents (obfd, stabstrsec, strings, 0,
-					 stringsize))
+      if (ret
+	  && (!bfd_set_section_contents (obfd, stabsec, syms, 0, symsize)
+	      || !bfd_set_section_contents (obfd, stabstrsec, strings, 0,
+					    stringsize)))
 	{
 	  bfd_nonfatal_message (NULL, obfd, NULL,
 				_("can't set debugging section contents"));
-	  free (strings);
-	  return false;
+	  ret = false;
 	}
 
-      return true;
+      free (strings);
+      free (syms);
+      return ret;
     }
 
   bfd_nonfatal_message (NULL, obfd, NULL,

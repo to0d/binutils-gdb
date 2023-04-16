@@ -123,10 +123,10 @@ void print_fixup (fixS *);
 /* We generally attach relocs to frag chains.  However, after we have
    chained these all together into a segment, any relocs we add after
    that must be attached to a segment.  This will include relocs added
-   in md_estimate_size_for_relax, for example.  */
-static int frags_chained = 0;
+   in md_estimate_size_before_relax, for example.  */
+static bool frags_chained = false;
 
-static int n_fixups;
+static unsigned int n_fixups;
 
 #define RELOC_ENUM enum bfd_reloc_code_real
 
@@ -416,7 +416,7 @@ chain_frchains_together (bfd *abfd ATTRIBUTE_UNUSED,
 
   /* Now that we've chained the frags together, we must add new fixups
      to the segment, not to the frag chain.  */
-  frags_chained = 1;
+  frags_chained = true;
 }
 
 static void

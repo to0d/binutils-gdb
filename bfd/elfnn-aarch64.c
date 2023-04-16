@@ -2767,14 +2767,9 @@ stub_hash_newfunc (struct bfd_hash_entry *entry,
 
       /* Initialize the local fields.  */
       eh = (struct elf_aarch64_stub_hash_entry *) entry;
-      eh->adrp_offset = 0;
-      eh->stub_sec = NULL;
-      eh->stub_offset = 0;
-      eh->target_value = 0;
-      eh->target_section = NULL;
-      eh->stub_type = aarch64_stub_none;
-      eh->h = NULL;
-      eh->id_sec = NULL;
+      memset (&eh->stub_sec, 0,
+	      (sizeof (struct elf_aarch64_stub_hash_entry)
+	       - offsetof (struct elf_aarch64_stub_hash_entry, stub_sec)));
     }
 
   return entry;
@@ -6951,8 +6946,12 @@ elfNN_aarch64_relocate_section (bfd *output_bfd,
 
 	  /* An object file might have a reference to a local
 	     undefined symbol.  This is a daft object file, but we
-	     should at least do something about it.  */
+	     should at least do something about it.  NONE and NULL
+	     relocations do not use the symbol and are explicitly
+	     allowed to use an undefined one, so allow those.
+	     Likewise for relocations against STN_UNDEF.  */
 	  if (r_type != R_AARCH64_NONE && r_type != R_AARCH64_NULL
+	      && r_symndx != STN_UNDEF
 	      && bfd_is_und_section (sec)
 	      && ELF_ST_BIND (sym->st_info) != STB_WEAK)
 	    (*info->callbacks->undefined_symbol)

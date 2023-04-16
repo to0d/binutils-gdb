@@ -196,23 +196,15 @@ _bfd_elf_swap_versym_out (bfd *abfd,
 unsigned long
 bfd_elf_hash (const char *namearg)
 {
-  const unsigned char *name = (const unsigned char *) namearg;
-  unsigned long h = 0;
-  unsigned long g;
-  int ch;
+  uint32_t h = 0;
 
-  while ((ch = *name++) != '\0')
+  for (const unsigned char *name = (const unsigned char *) namearg;
+       *name; name++)
     {
-      h = (h << 4) + ch;
-      if ((g = (h & 0xf0000000)) != 0)
-	{
-	  h ^= g >> 24;
-	  /* The ELF ABI says `h &= ~g', but this is equivalent in
-	     this case and on some machines one insn instead of two.  */
-	  h ^= g;
-	}
+      h = (h << 4) + *name;
+      h ^= (h >> 24) & 0xf0;
     }
-  return h & 0xffffffff;
+  return h & 0x0fffffff;
 }
 
 /* DT_GNU_HASH hash function.  Do not change this function; you will
@@ -221,13 +213,12 @@ bfd_elf_hash (const char *namearg)
 unsigned long
 bfd_elf_gnu_hash (const char *namearg)
 {
-  const unsigned char *name = (const unsigned char *) namearg;
-  unsigned long h = 5381;
-  unsigned char ch;
+  uint32_t h = 5381;
 
-  while ((ch = *name++) != '\0')
-    h = (h << 5) + h + ch;
-  return h & 0xffffffff;
+  for (const unsigned char *name = (const unsigned char *) namearg;
+       *name; name++)
+    h = (h << 5) + h + *name;
+  return h;
 }
 
 /* Create a tdata field OBJECT_SIZE bytes in length, zeroed out and with
@@ -2390,6 +2381,7 @@ bfd_section_from_shdr (bfd *abfd, unsigned int shindex)
 	   its sh_link points to the null section.  */
 	if (((abfd->flags & (DYNAMIC | EXEC_P)) != 0
 	     && (hdr->sh_flags & SHF_ALLOC) != 0)
+	    || (hdr->sh_flags & SHF_COMPRESSED) != 0
 	    || hdr->sh_type == SHT_RELR
 	    || hdr->sh_link == SHN_UNDEF
 	    || hdr->sh_link != elf_onesymtab (abfd)
@@ -3870,21 +3862,23 @@ assign_section_numbers (bfd *abfd, struct bfd_link_info *link_info)
 	{
 	case SHT_REL:
 	case SHT_RELA:
-	  /* A reloc section which we are treating as a normal BFD
-	     section.  sh_link is the section index of the symbol
-	     table.  sh_info is the section index of the section to
-	     which the relocation entries apply.  We assume that an
-	     allocated reloc section uses the dynamic symbol table
-	     if there is one.  Otherwise we guess the normal symbol
-	     table.  FIXME: How can we be sure?  */
-	  if (d->this_hdr.sh_link == 0 && (sec->flags & SEC_ALLOC) != 0)
-	    {
-	      s = bfd_get_section_by_name (abfd, ".dynsym");
-	      if (s != NULL)
-		d->this_hdr.sh_link = elf_section_data (s)->this_idx;
-	    }
+	  /* sh_link is the section index of the symbol table.
+	     sh_info is the section index of the section to which the
+	     relocation entries apply.  */
 	  if (d->this_hdr.sh_link == 0)
-	    d->this_hdr.sh_link = elf_onesymtab (abfd);
+	    {
+	      /* FIXME maybe: If this is a reloc section which we are
+		 treating as a normal section then we likely should
+		 not be assuming its sh_link is .dynsym or .symtab.  */
+	      if ((sec->flags & SEC_ALLOC) != 0)
+		{
+		  s = bfd_get_section_by_name (abfd, ".dynsym");
+		  if (s != NULL)
+		    d->this_hdr.sh_link = elf_section_data (s)->this_idx;
+		}
+	      else
+		d->this_hdr.sh_link = elf_onesymtab (abfd);
+	    }
 
 	  s = elf_get_reloc_section (sec);
 	  if (s != NULL)
@@ -8735,15 +8729,16 @@ _bfd_elf_get_dynamic_reloc_upper_bound (bfd *abfd)
   for (s = abfd->sections; s != NULL; s = s->next)
     if (elf_section_data (s)->this_hdr.sh_link == elf_dynsymtab (abfd)
 	&& (elf_section_data (s)->this_hdr.sh_type == SHT_REL
-	    || elf_section_data (s)->this_hdr.sh_type == SHT_RELA))
+	    || elf_section_data (s)->this_hdr.sh_type == SHT_RELA)
+	&& (elf_section_data (s)->this_hdr.sh_flags & SHF_COMPRESSED) == 0)
       {
-	ext_rel_size += s->size;
-	if (ext_rel_size < s->size)
+	ext_rel_size += elf_section_data (s)->this_hdr.sh_size;
+	if (ext_rel_size < elf_section_data (s)->this_hdr.sh_size)
 	  {
 	    bfd_set_error (bfd_error_file_truncated);
 	    return -1;
 	  }
-	count += s->size / elf_section_data (s)->this_hdr.sh_entsize;
+	count += NUM_SHDR_ENTRIES (&elf_section_data (s)->this_hdr);
 	if (count > LONG_MAX / sizeof (arelent *))
 	  {
 	    bfd_set_error (bfd_error_file_too_big);
@@ -8792,14 +8787,15 @@ _bfd_elf_canonicalize_dynamic_reloc (bfd *abfd,
     {
       if (elf_section_data (s)->this_hdr.sh_link == elf_dynsymtab (abfd)
 	  && (elf_section_data (s)->this_hdr.sh_type == SHT_REL
-	      || elf_section_data (s)->this_hdr.sh_type == SHT_RELA))
+	      || elf_section_data (s)->this_hdr.sh_type == SHT_RELA)
+	  && (elf_section_data (s)->this_hdr.sh_flags & SHF_COMPRESSED) == 0)
 	{
 	  arelent *p;
 	  long count, i;
 
 	  if (! (*slurp_relocs) (abfd, s, syms, true))
 	    return -1;
-	  count = s->size / elf_section_data (s)->this_hdr.sh_entsize;
+	  count = NUM_SHDR_ENTRIES (&elf_section_data (s)->this_hdr);
 	  p = s->relocation;
 	  for (i = 0; i < count; i++)
 	    *storage++ = p++;
@@ -9028,6 +9024,9 @@ _bfd_elf_slurp_version_tables (bfd *abfd, bool default_imported_symver)
 	  bfd_set_error (bfd_error_file_too_big);
 	  goto error_return_verdef;
 	}
+
+      if (amt == 0)
+	goto error_return_verdef;
       elf_tdata (abfd)->verdef = (Elf_Internal_Verdef *) bfd_zalloc (abfd, amt);
       if (elf_tdata (abfd)->verdef == NULL)
 	goto error_return_verdef;
@@ -9131,6 +9130,8 @@ _bfd_elf_slurp_version_tables (bfd *abfd, bool default_imported_symver)
 	  bfd_set_error (bfd_error_file_too_big);
 	  goto error_return;
 	}
+      if (amt == 0)
+	goto error_return;
       elf_tdata (abfd)->verdef = (Elf_Internal_Verdef *) bfd_zalloc (abfd, amt);
       if (elf_tdata (abfd)->verdef == NULL)
 	goto error_return;
@@ -12938,7 +12939,7 @@ _bfd_elf_get_synthetic_symtab (bfd *abfd,
   if (! (*slurp_relocs) (abfd, relplt, dynsyms, true))
     return -1;
 
-  count = relplt->size / hdr->sh_entsize;
+  count = NUM_SHDR_ENTRIES (hdr);
   size = count * sizeof (asymbol);
   p = relplt->relocation;
   for (i = 0; i < count; i++, p += bed->s->int_rels_per_ext_rel)

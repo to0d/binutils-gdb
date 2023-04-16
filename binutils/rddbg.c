@@ -49,19 +49,22 @@ read_debugging_info (bfd *abfd, asymbol **syms, long symcount,
   void *dhandle;
   bool found;
 
-  dhandle = debug_init ();
+  dhandle = debug_init (abfd);
   if (dhandle == NULL)
+    return NULL;
+
+  if (!debug_set_filename (dhandle, bfd_get_filename (abfd)))
     return NULL;
 
   if (! read_section_stabs_debugging_info (abfd, syms, symcount, dhandle,
 					   &found))
-    goto err_exit;
+    return NULL;
 
   if (bfd_get_flavour (abfd) == bfd_target_aout_flavour)
     {
       if (! read_symbol_stabs_debugging_info (abfd, syms, symcount, dhandle,
 					      &found))
-	goto err_exit;
+	return NULL;
     }
 
   /* Try reading the COFF symbols if we didn't find any stabs in COFF
@@ -71,7 +74,7 @@ read_debugging_info (bfd *abfd, asymbol **syms, long symcount,
       && symcount > 0)
     {
       if (! parse_coff (abfd, syms, symcount, dhandle))
-	goto err_exit;
+	return NULL;
       found = true;
     }
 
@@ -80,8 +83,6 @@ read_debugging_info (bfd *abfd, asymbol **syms, long symcount,
       if (! no_messages)
 	non_fatal (_("%s: no recognized debugging information"),
 		   bfd_get_filename (abfd));
-    err_exit:
-      free (dhandle);
       return NULL;
     }
 
@@ -107,6 +108,7 @@ read_section_stabs_debugging_info (bfd *abfd, asymbol **syms, long symcount,
     };
   unsigned int i;
   void *shandle;
+  bool ret = false;
 
   *pfound = false;
   shandle = NULL;
@@ -133,8 +135,7 @@ read_section_stabs_debugging_info (bfd *abfd, asymbol **syms, long symcount,
 	      fprintf (stderr, "%s: %s: %s\n",
 		       bfd_get_filename (abfd), names[i].secname,
 		       bfd_errmsg (bfd_get_error ()));
-	      free (shandle);
-	      return false;
+	      goto out;
 	    }
 
 	  if (!bfd_malloc_and_get_section (abfd, strsec, &strings))
@@ -142,9 +143,8 @@ read_section_stabs_debugging_info (bfd *abfd, asymbol **syms, long symcount,
 	      fprintf (stderr, "%s: %s: %s\n",
 		       bfd_get_filename (abfd), names[i].strsecname,
 		       bfd_errmsg (bfd_get_error ()));
-	      free (shandle);
 	      free (stabs);
-	      return false;
+	      goto out;
 	    }
 	  /* Zero terminate the strings table, just in case.  */
 	  strsize = bfd_section_size (strsec);
@@ -157,7 +157,7 @@ read_section_stabs_debugging_info (bfd *abfd, asymbol **syms, long symcount,
 		{
 		  free (strings);
 		  free (stabs);
-		  return false;
+		  goto out;
 		}
 	    }
 
@@ -241,39 +241,35 @@ read_section_stabs_debugging_info (bfd *abfd, asymbol **syms, long symcount,
 
 		  save_stab (type, desc, value, s);
 
-		  if (! parse_stab (dhandle, shandle, type, desc, value, s))
+		  if (!parse_stab (dhandle, shandle, type, desc, value, s))
 		    {
 		      stab_context ();
 		      free_saved_stabs ();
 		      free (f);
-		      free (shandle);
 		      free (stabs);
 		      free (strings);
-		      return false;
+		      goto out;
 		    }
 
-		  /* Don't free f, since I think the stabs code
-		     expects strings to hang around.  This should be
-		     straightened out.  FIXME.  */
+		  free (f);
 		}
 	    }
 
 	  free_saved_stabs ();
 	  free (stabs);
-
-	  /* Don't free strings, since I think the stabs code expects
-	     the strings to hang around.  This should be straightened
-	     out.  FIXME.  */
+	  free (strings);
 	}
     }
+  ret = true;
 
+ out:
   if (shandle != NULL)
     {
-      if (! finish_stab (dhandle, shandle))
+      if (! finish_stab (dhandle, shandle, ret))
 	return false;
     }
 
-  return true;
+  return ret;
 }
 
 /* Read stabs in the symbol table.  */
@@ -309,7 +305,7 @@ read_symbol_stabs_debugging_info (bfd *abfd, asymbol **syms, long symcount,
 
 	  s = i.name;
 	  if (s == NULL || strlen (s) < 1)
-	    return false;
+	    break;
 	  f = NULL;
 
 	  while (strlen (s) > 0
@@ -330,29 +326,28 @@ read_symbol_stabs_debugging_info (bfd *abfd, asymbol **syms, long symcount,
 
 	  save_stab (i.stab_type, i.stab_desc, i.value, s);
 
-	  if (! parse_stab (dhandle, shandle, i.stab_type, i.stab_desc,
-			    i.value, s))
+	  if (!parse_stab (dhandle, shandle, i.stab_type, i.stab_desc,
+			   i.value, s))
 	    {
 	      stab_context ();
-	      free_saved_stabs ();
-	      return false;
+	      free (f);
+	      break;
 	    }
 
-	  /* Don't free f, since I think the stabs code expects
-	     strings to hang around.  This should be straightened out.
-	     FIXME.  */
+	  free (f);
 	}
     }
+  bool ret = ps >= symend;
 
   free_saved_stabs ();
 
   if (shandle != NULL)
     {
-      if (! finish_stab (dhandle, shandle))
+      if (! finish_stab (dhandle, shandle, ret))
 	return false;
     }
 
-  return true;
+  return ret;
 }
 
 /* Record stabs strings, so that we can give some context for errors.  */

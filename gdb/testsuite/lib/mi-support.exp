@@ -265,6 +265,10 @@ proc default_mi_gdb_start { { flags {} } } {
 	    # We have a new format mi startup prompt.
 	    verbose "GDB initialized."
 	}
+	-re "^(=\[^\r\n\]*\r\n)*$mi_gdb_prompt$" {
+	    # Output with -q.
+	    verbose "GDB initialized."
+	}
 	-re ".*unrecognized option.*for a complete list of options." {
 	    untested "skip mi tests (not compiled with mi support)."
 	    remote_close host
@@ -1267,7 +1271,7 @@ proc mi_expect_stop { reason func args file line extra test } {
 
     set r ""
     if { $reason != "" } {
-	if { [regexp {"} $reason] } {
+	if { [regexp "\"" $reason] } {
 	   set r "reason=$reason,"
 	} else {
 	   set r "reason=\"$reason\","
@@ -1426,11 +1430,11 @@ proc mi_create_varobj_checked { name expression type testname } {
 }
 
 # Same as mi_create_floating_varobj, but assumes the test is creating
-# a dynamic varobj that has children, so the value must be "{...}".
-# The "has_more" attribute is checked.
-proc mi_create_dynamic_varobj {name expression has_more testname} {
+# a dynamic varobj that has children.  The "value" and "has_more"
+# attributes are checked.
+proc mi_create_dynamic_varobj {name expression value has_more testname} {
     mi_gdb_test "-var-create $name @ $expression" \
-	"\\^done,name=\"$name\",numchild=\"0\",value=\"{\\.\\.\\.}\",type=.*,has_more=\"${has_more}\"" \
+	"\\^done,name=\"$name\",numchild=\"0\",value=\"$value\",type=.*,has_more=\"${has_more}\"" \
 	$testname
 }
 
@@ -2681,7 +2685,8 @@ proc mi_make_breakpoint_multi {args} {
 
 proc mi_make_breakpoint_pending {args} {
     parse_args {{number .*} {type .*} {disp .*} {enabled .*}
-	{pending .*} {original-location .*} {thread ""} {cond ""}}
+	{pending .*} {original-location .*} {thread ""} {cond ""}
+	{script ""} {times .*}}
 
     set attr_list {}
     foreach attr [list number type disp enabled] {
@@ -2695,8 +2700,6 @@ proc mi_make_breakpoint_pending {args} {
     }
 
     set ignore 0
-    set times 0
-    set script ""
     set evaluated-by ""
 
     set result [mi_make_breakpoint_1 \

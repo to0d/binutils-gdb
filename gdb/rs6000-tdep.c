@@ -940,7 +940,7 @@ ppc_displaced_step_copy_insn (struct gdbarch *gdbarch,
 
   displaced_debug_printf ("copy %s->%s: %s",
 			  paddress (gdbarch, from), paddress (gdbarch, to),
-			  displaced_step_dump_bytes (buf, len).c_str ());
+			  bytes_to_string (buf, len).c_str ());
 
   /* This is a work around for a problem with g++ 4.8.  */
   return displaced_step_copy_insn_closure_up (closure.release ());
@@ -952,8 +952,18 @@ static void
 ppc_displaced_step_fixup (struct gdbarch *gdbarch,
 			  struct displaced_step_copy_insn_closure *closure_,
 			  CORE_ADDR from, CORE_ADDR to,
-			  struct regcache *regs)
+			  struct regcache *regs, bool completed_p)
 {
+  /* If the displaced instruction didn't complete successfully then all we
+     need to do is restore the program counter.  */
+  if (!completed_p)
+    {
+      CORE_ADDR pc = regcache_read_pc (regs);
+      pc = from + (pc - to);
+      regcache_write_pc (regs, pc);
+      return;
+    }
+
   enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
   /* Our closure is a copy of the instruction.  */
   ppc_displaced_step_copy_insn_closure *closure
@@ -1089,13 +1099,13 @@ ppc_displaced_step_prepare  (gdbarch *arch, thread_info *thread,
 
 static displaced_step_finish_status
 ppc_displaced_step_finish (gdbarch *arch, thread_info *thread,
-			   gdb_signal sig)
+			   const target_waitstatus &status)
 {
   ppc_inferior_data *per_inferior = get_ppc_per_inferior (thread->inf);
 
   gdb_assert (per_inferior->disp_step_buf.has_value ());
 
-  return per_inferior->disp_step_buf->finish (arch, thread, sig);
+  return per_inferior->disp_step_buf->finish (arch, thread, status);
 }
 
 /* Implementation of gdbarch_displaced_step_restore_all_in_ptid.  */

@@ -723,36 +723,6 @@ myread (int desc, char *addr, int len)
   return orglen;
 }
 
-/* See utils.h.  */
-
-ULONGEST
-uinteger_pow (ULONGEST v1, LONGEST v2)
-{
-  if (v2 < 0)
-    {
-      if (v1 == 0)
-	error (_("Attempt to raise 0 to negative power."));
-      else
-	return 0;
-    }
-  else
-    {
-      /* The Russian Peasant's Algorithm.  */
-      ULONGEST v;
-
-      v = 1;
-      for (;;)
-	{
-	  if (v2 & 1L)
-	    v *= v1;
-	  v2 >>= 1;
-	  if (v2 == 0)
-	    return v;
-	  v1 *= v1;
-	}
-    }
-}
-
 
 
 /* An RAII class that sets up to handle input and then tears down
@@ -1939,7 +1909,7 @@ fprintf_symbol (struct ui_file *stream, const char *name,
       else
 	{
 	  gdb::unique_xmalloc_ptr<char> demangled
-	    = language_demangle (language_def (lang), name, arg_mode);
+	    = language_def (lang)->demangle_symbol (name, arg_mode);
 	  gdb_puts (demangled ? demangled.get () : name, stream);
 	}
     }

@@ -445,7 +445,7 @@ is_import_fixup_symbol (struct coff_symbol *cs,
 
 static struct minimal_symbol *
 record_minimal_symbol (minimal_symbol_reader &reader,
-		       struct coff_symbol *cs, CORE_ADDR address,
+		       struct coff_symbol *cs, unrelocated_addr address,
 		       enum minimal_symbol_type type, int section, 
 		       struct objfile *objfile)
 {
@@ -880,8 +880,9 @@ coff_symtab_read (minimal_symbol_reader &reader,
 	  tmpaddr = cs->c_value;
 	  /* Don't record unresolved symbols.  */
 	  if (!(cs->c_secnum <= 0 && cs->c_value == 0))
-	    record_minimal_symbol (reader, cs, tmpaddr, mst_text,
-				   section, objfile);
+	    record_minimal_symbol (reader, cs,
+				   unrelocated_addr (tmpaddr),
+				   mst_text, section, objfile);
 
 	  fcn_line_ptr = main_aux.x_sym.x_fcnary.x_fcn.x_lnnoptr;
 	  fcn_start_addr = tmpaddr;
@@ -1041,8 +1042,9 @@ coff_symtab_read (minimal_symbol_reader &reader,
 		  ms_type = mst_unknown;
 	      }
 
-	    msym = record_minimal_symbol (reader, cs, tmpaddr, ms_type,
-					  sec, objfile);
+	    msym = record_minimal_symbol (reader, cs,
+					  unrelocated_addr (tmpaddr),
+					  ms_type, sec, objfile);
 	    if (msym)
 	      gdbarch_coff_make_msymbol_special (gdbarch,
 						 cs->c_sclass, msym);
@@ -1767,7 +1769,7 @@ decode_type (struct coff_symbol *cs, unsigned int c_type,
 
 	  /* Define an array type.  */
 	  /* auxent refers to array, not base type.  */
-	  if (aux->x_sym.x_tagndx.l == 0)
+	  if (aux->x_sym.x_tagndx.u32 == 0)
 	    cs->c_naux = 0;
 
 	  /* Shift the indices down.  */
@@ -1794,14 +1796,14 @@ decode_type (struct coff_symbol *cs, unsigned int c_type,
      unions, and enums, so we have to check the c_sclass field.  SCO
      3.2v4 cc gets confused with pointers to pointers to defined
      structs, and generates negative x_tagndx fields.  */
-  if (cs->c_naux > 0 && aux->x_sym.x_tagndx.l != 0)
+  if (cs->c_naux > 0 && aux->x_sym.x_tagndx.u32 != 0)
     {
       if (cs->c_sclass != C_STRTAG
 	  && cs->c_sclass != C_UNTAG
 	  && cs->c_sclass != C_ENTAG
-	  && aux->x_sym.x_tagndx.l >= 0)
+	  && (int32_t) aux->x_sym.x_tagndx.u32 >= 0)
 	{
-	  type = coff_alloc_type (aux->x_sym.x_tagndx.l);
+	  type = coff_alloc_type (aux->x_sym.x_tagndx.u32);
 	  return type;
 	}
       else
@@ -1824,7 +1826,7 @@ decode_function_type (struct coff_symbol *cs,
 		      union internal_auxent *aux, 
 		      struct objfile *objfile)
 {
-  if (aux->x_sym.x_tagndx.l == 0)
+  if (aux->x_sym.x_tagndx.u32 == 0)
     cs->c_naux = 0;	/* auxent refers to function, not base
 			   type.  */
 
@@ -1896,7 +1898,7 @@ decode_base_type (struct coff_symbol *cs,
 	{
 	  type = coff_read_struct_type (cs->c_symnum,
 					aux->x_sym.x_misc.x_lnsz.x_size,
-					aux->x_sym.x_fcnary.x_fcn.x_endndx.l,
+					aux->x_sym.x_fcnary.x_fcn.x_endndx.u32,
 					objfile);
 	}
       return type;
@@ -1916,7 +1918,7 @@ decode_base_type (struct coff_symbol *cs,
 	{
 	  type = coff_read_struct_type (cs->c_symnum,
 					aux->x_sym.x_misc.x_lnsz.x_size,
-					aux->x_sym.x_fcnary.x_fcn.x_endndx.l,
+					aux->x_sym.x_fcnary.x_fcn.x_endndx.u32,
 					objfile);
 	}
       type->set_code (TYPE_CODE_UNION);
@@ -1937,7 +1939,7 @@ decode_base_type (struct coff_symbol *cs,
 	{
 	  type = coff_read_enum_type (cs->c_symnum,
 				      aux->x_sym.x_misc.x_lnsz.x_size,
-				      aux->x_sym.x_fcnary.x_fcn.x_endndx.l,
+				      aux->x_sym.x_fcnary.x_fcn.x_endndx.u32,
 				      objfile);
 	}
       return type;

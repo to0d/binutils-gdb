@@ -74,6 +74,7 @@
 #include "gdbsupport/common-debug.h"
 #include "gdbsupport/buildargv.h"
 #include "extension.h"
+#include "disasm.h"
 
 /* Prototypes for local functions */
 
@@ -645,7 +646,7 @@ holding the child stopped.  Try \"set detach-on-fork\" or \
 
      The former case will have pending_follow cleared, the later will have
      pending_follow set.  */
-  thread_info *parent_thread = find_thread_ptid (parent_inf, parent_ptid);
+  thread_info *parent_thread = parent_inf->find_thread (parent_ptid);
   gdb_assert (parent_thread != nullptr);
   parent_thread->pending_follow.set_spurious ();
 
@@ -875,7 +876,7 @@ follow_fork ()
 	    /* If we followed the child, switch to it...  */
 	    if (follow_child)
 	      {
-		tp = find_thread_ptid (parent_targ, child);
+		tp = parent_targ->find_thread (child);
 		switch_to_thread (tp);
 
 		/* ... and preserve the stepping state, in case the
@@ -1724,24 +1725,6 @@ displaced_step_reset (displaced_step_thread_state *displaced)
 
 using displaced_step_reset_cleanup = FORWARD_SCOPE_EXIT (displaced_step_reset);
 
-/* See infrun.h.  */
-
-std::string
-displaced_step_dump_bytes (const gdb_byte *buf, size_t len)
-{
-  std::string ret;
-
-  for (size_t i = 0; i < len; i++)
-    {
-      if (i == 0)
-	ret += string_printf ("%02x", buf[i]);
-      else
-	ret += string_printf (" %02x", buf[i]);
-    }
-
-  return ret;
-}
-
 /* Prepare to single-step, using displaced stepping.
 
    Note that we cannot use displaced stepping when we have a signal to
@@ -1807,6 +1790,30 @@ displaced_step_prepare_throw (thread_info *tp)
   CORE_ADDR original_pc = regcache_read_pc (regcache);
   CORE_ADDR displaced_pc;
 
+  /* Display the instruction we are going to displaced step.  */
+  if (debug_displaced)
+    {
+      string_file tmp_stream;
+      int dislen = gdb_print_insn (gdbarch, original_pc, &tmp_stream,
+				   nullptr);
+
+      if (dislen > 0)
+	{
+	  gdb::byte_vector insn_buf (dislen);
+	  read_memory (original_pc, insn_buf.data (), insn_buf.size ());
+
+	  std::string insn_bytes = bytes_to_string (insn_buf);
+
+	  displaced_debug_printf ("original insn %s: %s \t %s",
+				  paddress (gdbarch, original_pc),
+				  insn_bytes.c_str (),
+				  tmp_stream.string ().c_str ());
+	}
+      else
+	displaced_debug_printf ("original insn %s: invalid length: %d",
+				paddress (gdbarch, original_pc), dislen);
+    }
+
   displaced_step_prepare_status status
     = gdbarch_displaced_step_prepare (gdbarch, tp, displaced_pc);
 
@@ -1844,6 +1851,47 @@ displaced_step_prepare_throw (thread_info *tp)
 			  tp->ptid.to_string ().c_str (),
 			  paddress (gdbarch, original_pc),
 			  paddress (gdbarch, displaced_pc));
+
+  /* Display the new displaced instruction(s).  */
+  if (debug_displaced)
+    {
+      string_file tmp_stream;
+      CORE_ADDR addr = displaced_pc;
+
+      /* If displaced stepping is going to use h/w single step then we know
+	 that the replacement instruction can only be a single instruction,
+	 in that case set the end address at the next byte.
+
+	 Otherwise the displaced stepping copy instruction routine could
+	 have generated multiple instructions, and all we know is that they
+	 must fit within the LEN bytes of the buffer.  */
+      CORE_ADDR end
+	= addr + (gdbarch_displaced_step_hw_singlestep (gdbarch)
+		  ? 1 : gdbarch_displaced_step_buffer_length (gdbarch));
+
+      while (addr < end)
+	{
+	  int dislen = gdb_print_insn (gdbarch, addr, &tmp_stream, nullptr);
+	  if (dislen <= 0)
+	    {
+	      displaced_debug_printf
+		("replacement insn %s: invalid length: %d",
+		 paddress (gdbarch, addr), dislen);
+	      break;
+	    }
+
+	  gdb::byte_vector insn_buf (dislen);
+	  read_memory (addr, insn_buf.data (), insn_buf.size ());
+
+	  std::string insn_bytes = bytes_to_string (insn_buf);
+	  std::string insn_str = tmp_stream.release ();
+	  displaced_debug_printf ("replacement insn %s: %s \t %s",
+				  paddress (gdbarch, addr),
+				  insn_bytes.c_str (),
+				  insn_str.c_str ());
+	  addr += dislen;
+	}
+    }
 
   return DISPLACED_STEP_PREPARE_STATUS_OK;
 }
@@ -1895,7 +1943,8 @@ displaced_step_prepare (thread_info *thread)
    DISPLACED_STEP_FINISH_STATUS_OK as well.  */
 
 static displaced_step_finish_status
-displaced_step_finish (thread_info *event_thread, enum gdb_signal signal)
+displaced_step_finish (thread_info *event_thread,
+		       const target_waitstatus &event_status)
 {
   displaced_step_thread_state *displaced = &event_thread->displaced_step_state;
 
@@ -1917,7 +1966,7 @@ displaced_step_finish (thread_info *event_thread, enum gdb_signal signal)
   /* Do the fixup, and release the resources acquired to do the displaced
      step. */
   return gdbarch_displaced_step_finish (displaced->get_original_gdbarch (),
-					event_thread, signal);
+					event_thread, event_status);
 }
 
 /* Data to be passed around while handling an event.  This data is
@@ -2709,23 +2758,6 @@ resume_1 (enum gdb_signal sig)
 	 continue and we will hit it anyway.  */
       if (gdbarch_cannot_step_breakpoint (gdbarch))
 	step = false;
-    }
-
-  if (debug_displaced
-      && tp->control.trap_expected
-      && use_displaced_stepping (tp)
-      && !step_over_info_valid_p ())
-    {
-      struct regcache *resume_regcache = get_thread_regcache (tp);
-      struct gdbarch *resume_gdbarch = resume_regcache->arch ();
-      CORE_ADDR actual_pc = regcache_read_pc (resume_regcache);
-      gdb_byte buf[4];
-
-      read_memory (actual_pc, buf, sizeof (buf));
-      displaced_debug_printf ("run %s: %s",
-			      paddress (resume_gdbarch, actual_pc),
-			      displaced_step_dump_bytes
-				(buf, sizeof (buf)).c_str ());
     }
 
   if (tp->control.may_range_step)
@@ -3729,7 +3761,7 @@ do_target_wait_1 (inferior *inf, ptid_t ptid,
 			   ptid.to_string ().c_str ());
 
       /* We have a specific thread to check.  */
-      tp = find_thread_ptid (inf, ptid);
+      tp = inf->find_thread (ptid);
       gdb_assert (tp != nullptr);
       if (!tp->has_pending_waitstatus ())
 	tp = nullptr;
@@ -5084,7 +5116,7 @@ handle_one (const wait_one_event &event)
 	}
       else
 	{
-	  t = find_thread_ptid (event.target, event.ptid);
+	  t = event.target->find_thread (event.ptid);
 	  /* Check if this is the first time we see this thread.
 	     Don't bother adding if it individually exited.  */
 	  if (t == nullptr
@@ -5105,7 +5137,7 @@ handle_one (const wait_one_event &event)
     }
   else
     {
-      thread_info *t = find_thread_ptid (event.target, event.ptid);
+      thread_info *t = event.target->find_thread (event.ptid);
       if (t == nullptr)
 	t = add_thread (event.target, event.ptid);
 
@@ -5128,7 +5160,7 @@ handle_one (const wait_one_event &event)
 	  /* We caught the event that we intended to catch, so
 	     there's no event to save as pending.  */
 
-	  if (displaced_step_finish (t, GDB_SIGNAL_0)
+	  if (displaced_step_finish (t, event.ws)
 	      == DISPLACED_STEP_FINISH_STATUS_NOT_EXECUTED)
 	    {
 	      /* Add it back to the step-over queue.  */
@@ -5143,7 +5175,6 @@ handle_one (const wait_one_event &event)
 	}
       else
 	{
-	  enum gdb_signal sig;
 	  struct regcache *regcache;
 
 	  infrun_debug_printf
@@ -5154,10 +5185,7 @@ handle_one (const wait_one_event &event)
 	  /* Record for later.  */
 	  save_waitstatus (t, event.ws);
 
-	  sig = (event.ws.kind () == TARGET_WAITKIND_STOPPED
-		 ? event.ws.sig () : GDB_SIGNAL_0);
-
-	  if (displaced_step_finish (t, sig)
+	  if (displaced_step_finish (t, event.ws)
 	      == DISPLACED_STEP_FINISH_STATUS_NOT_EXECUTED)
 	    {
 	      /* Add it back to the step-over queue.  */
@@ -5510,7 +5538,7 @@ handle_inferior_event (struct execution_control_state *ecs)
   if (ecs->ws.kind () != TARGET_WAITKIND_EXITED
       && ecs->ws.kind () != TARGET_WAITKIND_SIGNALLED)
     {
-      ecs->event_thread = find_thread_ptid (ecs->target, ecs->ptid);
+      ecs->event_thread = ecs->target->find_thread (ecs->ptid);
       /* If it's a new thread, add it to the thread database.  */
       if (ecs->event_thread == nullptr)
 	ecs->event_thread = add_thread (ecs->target, ecs->ptid);
@@ -5659,7 +5687,7 @@ handle_inferior_event (struct execution_control_state *ecs)
 	   need to have access to the just-exited thread.  That is the
 	   case of GNU/Linux's "checkpoint" support, for example.
 	   Call the switch_to_xxx routine as appropriate.  */
-	thread_info *thr = find_thread_ptid (ecs->target, ecs->ptid);
+	thread_info *thr = ecs->target->find_thread (ecs->ptid);
 	if (thr != nullptr)
 	  switch_to_thread (thr);
 	else
@@ -5759,7 +5787,7 @@ handle_inferior_event (struct execution_control_state *ecs)
 	       has been done.  Perform cleanup for parent process here.  Note
 	       that this operation also cleans up the child process for vfork,
 	       because their pages are shared.  */
-	    displaced_step_finish (ecs->event_thread, GDB_SIGNAL_TRAP);
+	    displaced_step_finish (ecs->event_thread, ecs->ws);
 	    /* Start a new step-over in another thread if there's one
 	       that needs it.  */
 	    start_step_over ();
@@ -5846,7 +5874,7 @@ handle_inferior_event (struct execution_control_state *ecs)
 	  /* Note that one of these may be an invalid pointer,
 	     depending on detach_fork.  */
 	  thread_info *parent = ecs->event_thread;
-	  thread_info *child = find_thread_ptid (targ, ecs->ws.child_ptid ());
+	  thread_info *child = targ->find_thread (ecs->ws.child_ptid ());
 
 	  /* At this point, the parent is marked running, and the
 	     child is marked stopped.  */
@@ -6124,7 +6152,7 @@ resumed_thread_with_pending_status (struct thread_info *tp,
 static int
 finish_step_over (struct execution_control_state *ecs)
 {
-  displaced_step_finish (ecs->event_thread, ecs->event_thread->stop_signal ());
+  displaced_step_finish (ecs->event_thread, ecs->ws);
 
   bool had_step_over_info = step_over_info_valid_p ();
 
@@ -8162,6 +8190,9 @@ insert_exception_resume_breakpoint (struct thread_info *tp,
 	  infrun_debug_printf ("exception resume at %lx",
 			       (unsigned long) handler);
 
+	  /* set_momentary_breakpoint_at_pc creates a thread-specific
+	     breakpoint for the current inferior thread.  */
+	  gdb_assert (tp == inferior_thread ());
 	  bp = set_momentary_breakpoint_at_pc (get_frame_arch (frame),
 					       handler,
 					       bp_exception_resume).release ();
@@ -8169,8 +8200,7 @@ insert_exception_resume_breakpoint (struct thread_info *tp,
 	  /* set_momentary_breakpoint_at_pc invalidates FRAME.  */
 	  frame = nullptr;
 
-	  bp->thread = tp->global_num;
-	  inferior_thread ()->control.exception_resume_breakpoint = bp;
+	  tp->control.exception_resume_breakpoint = bp;
 	}
     }
   catch (const gdb_exception_error &e)
@@ -8200,10 +8230,12 @@ insert_exception_resume_from_probe (struct thread_info *tp,
   infrun_debug_printf ("exception resume at %s",
 		       paddress (probe->objfile->arch (), handler));
 
+  /* set_momentary_breakpoint_at_pc creates a thread-specific breakpoint
+     for the current inferior thread.  */
+  gdb_assert (tp == inferior_thread ());
   bp = set_momentary_breakpoint_at_pc (get_frame_arch (frame),
 				       handler, bp_exception_resume).release ();
-  bp->thread = tp->global_num;
-  inferior_thread ()->control.exception_resume_breakpoint = bp;
+  tp->control.exception_resume_breakpoint = bp;
 }
 
 /* This is called when an exception has been intercepted.  Check to

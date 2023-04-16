@@ -366,7 +366,7 @@ public:
      object.  */
   using vec_type = std::vector<std::unique_ptr<cooked_index_shard>>;
 
-  cooked_index (vec_type &&vec, dwarf2_per_bfd *per_bfd);
+  explicit cooked_index (vec_type &&vec);
   ~cooked_index () override;
   DISABLE_COPY_AND_ASSIGN (cooked_index);
 
@@ -429,6 +429,9 @@ public:
     m_write_future.wait ();
   }
 
+  /* Start writing to the index cache, if the user asked for this.  */
+  void start_writing_index (dwarf2_per_bfd *per_bfd);
+
 private:
 
   /* Maybe write the index to the index cache.  */
@@ -439,7 +442,7 @@ private:
   vec_type m_vector;
 
   /* A future that tracks when the 'index_write' method is done.  */
-  std::future<void> m_write_future;
+  gdb::future<void> m_write_future;
 };
 
 #endif /* GDB_DWARF2_COOKED_INDEX_H */
